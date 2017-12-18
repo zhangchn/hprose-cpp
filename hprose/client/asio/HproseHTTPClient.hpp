@@ -179,6 +179,7 @@ private:
             }
         }
         SetHeader("Host", (ipv6 ? ('[' + host + ']') : host) + ((port == "80") ? std::string() : (':' + port)));
+<<<<<<< HEAD
 	/*
         x = surl.find('?');
         if (x != std::string::npos) {
@@ -188,6 +189,11 @@ private:
         }
 	*/
 	path = '/' + surl;
+=======
+        
+        path = '/' + surl;
+        
+>>>>>>> 99570018f665c4f4491582c8df4cd83b9c2ea2ff
         if (host == "") {
             host = "localhost";
         }
