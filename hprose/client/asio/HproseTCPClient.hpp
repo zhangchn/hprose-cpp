@@ -139,6 +139,7 @@ private:
     public:
         TCPContext(boost::asio::io_service & ios)
             : resolver(ios),
+            timeout(300),
             socket(ios),
 #ifndef HPROSE_NO_OPENSSL
             sslContext(ios, boost::asio::ssl::context::sslv23),
@@ -235,6 +236,7 @@ private:
                 }
                 payloadSize -= s;
             }
+            aliveTime = clock() + timeout * CLOCKS_PER_SEC;
         };
  
         void Write(boost::asio::streambuf & buf, bool secure) {
@@ -253,6 +255,7 @@ private:
         std::string aliveHost;
         std::string alivePort;
         clock_t aliveTime;
+        int timeout;
 
         tcp::resolver resolver;
         tcp::socket socket;
