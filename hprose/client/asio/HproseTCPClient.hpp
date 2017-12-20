@@ -22,6 +22,12 @@ public:
     };
     
     virtual ~HproseTCPClient() {
+        boost::mutex::scoped_lock lock(mutex);
+        while (!pool.empty()) {
+            TCPContext * context = pool.top();
+            pool.pop();
+            delete context;
+        }
     };
     
     virtual void UseService(const std::string & uri) {
