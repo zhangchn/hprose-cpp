@@ -10,6 +10,7 @@
 #include <boost/asio/ssl.hpp>
 #endif
 #include <boost/thread/mutex.hpp>
+#include <iostream>
 
 namespace hprose { namespace asio {
 
@@ -26,6 +27,7 @@ public:
         while (!pool.empty()) {
             TCPContext * context = pool.top();
             pool.pop();
+            //context->Close();
             delete context;
         }
     };
@@ -155,15 +157,24 @@ private:
             responseStream(&response) {
         };
 
-    public:
+        ~TCPContext() {
+            Close();
+        }
+        void Close() {
+            socket.close();
+        }
+
         void Send(const std::string & host, const std::string & port, bool secure) {
             if (!Connect(
 #ifndef HPROSE_NO_OPENSSL
                 secure ?
                 sslSocket.next_layer() :
 #endif
-                socket, host, port, secure)) return;
-            boost::system::error_code error = boost::asio::error::host_not_found;
+                socket, host, port, secure)) {
+                std::cerr << "error connecting to host: " << host << " port: " << port << std::endl;
+                HPROSE_THROW_EXCEPTION("error connecting to host");
+            }
+            //boost::system::error_code error = boost::asio::error::host_not_found;
             boost::asio::streambuf header;
             std::iostream headerStream(&header);
             uint32_t rs = request.size();
@@ -171,7 +182,23 @@ private:
             headerStream.write(reinterpret_cast<const char *>(&payloadSize), sizeof(payloadSize));
             //Write(header, secure);
             headerStream << &request;
-            Write(header, secure);
+            try {
+                Write(header, secure);
+            } catch (boost::system::system_error &e) {
+                // reset socket and retry
+                socket.close();
+                if (Connect(
+            #ifndef HPROSE_NO_OPENSSL
+                            secure ?
+                            sslSocket.next_layer() :
+            #endif
+                            socket, host, port, secure)) {
+                    Write(header, secure);
+                } else {
+                    //throw HproseException(e.what());
+                    throw e;
+                }
+            }
             if (response.size()) {
                 response.consume(response.size());
             }
@@ -199,6 +226,7 @@ private:
             }
             if (error) {
                 Clear();
+                std::cerr << "error connecting to endpoint: " << error.message() << std::endl;
                 return false;
             } else {
 #ifndef HPROSE_NO_OPENSSL
@@ -210,6 +238,8 @@ private:
                     }
                 }
 #endif
+                boost::asio::ip::tcp::no_delay option(true);
+                socket.set_option(option);
                 aliveHost = host;
                 alivePort = port;
                 return true;

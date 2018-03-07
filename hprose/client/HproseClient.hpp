@@ -108,7 +108,17 @@ public:
             SendData(context);
             DoInput(ret, args, error, GetInputStream(context));
         }
+        catch (HproseException &e) {
+            std::cerr << e.what() << std::endl;
+            error = e.what();
+        }
+        catch (std::exception &e) {
+            std::cerr << e.what() << std::endl;
+            error = e.what();
+        }
         catch (...) {
+            error = "some exception occurred.";
+            std::cerr<< "?" << std::endl;
         }
         EndInvoke(context);
         if (!error.empty()) {
