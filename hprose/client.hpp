@@ -25,5 +25,6 @@
 #endif
 
 #include <hprose/client/HproseHTTPClient.hpp>
+#include <hprose/client/HproseTCPClient.hpp>
 
 #endif // HPROSE_CLIENT_HPP
