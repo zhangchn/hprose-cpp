@@ -24,6 +24,12 @@ tcp:
 subscribe:
 	$(CXX) -fno-limit-debug-info -g $(STD) test-$@.cpp $(LIBS) $(INCLUDE) -o $(BUILD_DIR)$@
 
+virtualreport:
+	$(CXX) -fno-limit-debug-info -g $(STD) test-$@.cpp $(LIBS) $(INCLUDE) -o $(BUILD_DIR)$@
+
+TimePushClient:
+	$(CXX) -fno-limit-debug-info -g $(STD) $@.cpp $(LIBS) $(INCLUDE) -o $(BUILD_DIR)$@
+
 .PHONY: clean
 
 clean:

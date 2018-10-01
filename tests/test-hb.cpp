@@ -9,7 +9,7 @@
 using namespace std;
 using namespace hprose;
 
-HproseTCPClient client("tcp://192.168.2.150:9090");
+HproseTCPClient client("tcp://172.99.2.150:9090");
 /*
 class Test1 {
 public:
