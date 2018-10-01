@@ -11,16 +11,20 @@
 #endif
 #include <boost/thread/mutex.hpp>
 #include <iostream>
+#include <boost/lambda/bind.hpp>
+#include <boost/lambda/lambda.hpp>
 
 namespace hprose { namespace asio {
 
 using boost::asio::ip::tcp;
-
+using boost::lambda::bind;
+using boost::lambda::_1;
+using boost::lambda::var;
 class HproseTCPClient : public HproseClient {
 public:
     HproseTCPClient(const std::string & uri = "tcp://localhost:8000") {
         UseService(uri);
-    };
+    }
     
     virtual ~HproseTCPClient() {
         boost::mutex::scoped_lock lock(mutex);
@@ -30,7 +34,7 @@ public:
             //context->Close();
             delete context;
         }
-    };
+    }
     
     virtual void UseService(const std::string & uri) {
         HproseClient::UseService(uri);
@@ -38,6 +42,8 @@ public:
     }
     
     void SetKeepAlive(bool keepAlive, int timeout = 300) {
+        this->keepAlive = keepAlive;
+        this->timeout = timeout;
     }
 
 protected:
@@ -48,7 +54,7 @@ protected:
             pool.pop();
             return ctx;
         } else {
-            return new TCPContext(ios);
+            return new TCPContext(ios, timeout);
         }
     }
 
@@ -145,9 +151,10 @@ private:
 
     class TCPContext {
     public:
-        TCPContext(boost::asio::io_service & ios)
+        TCPContext(boost::asio::io_service & ios, int timeout)
             : resolver(ios),
-            timeout(300),
+            timeout(timeout),
+            deadlineTimer(ios),
             socket(ios),
 #ifndef HPROSE_NO_OPENSSL
             sslContext(ios, boost::asio::ssl::context::sslv23),
@@ -155,6 +162,8 @@ private:
 #endif
             requestStream(&request),
             responseStream(&response) {
+            deadlineTimer.expires_at(boost::posix_time::pos_infin);
+            CheckDeadline();
         };
 
         ~TCPContext() {
@@ -183,9 +192,11 @@ private:
             //Write(header, secure);
             headerStream << &request;
             try {
-                Write(header, secure);
+                //Write(header, secure);
+                WriteWithTimeout(header, secure, timeout);
             } catch (boost::system::system_error &e) {
                 // reset socket and retry
+
                 socket.close();
                 if (Connect(
             #ifndef HPROSE_NO_OPENSSL
@@ -193,7 +204,8 @@ private:
                             sslSocket.next_layer() :
             #endif
                             socket, host, port, secure)) {
-                    Write(header, secure);
+                    //Write(header, secure);
+                    WriteWithTimeout(header, secure, timeout);
                 } else {
                     //throw HproseException(e.what());
                     throw e;
@@ -202,16 +214,25 @@ private:
             if (response.size()) {
                 response.consume(response.size());
             }
-            std::string s;
-            Read(secure); 
-            
-        };
+            //std::string s;
+
+            ReadWithTimeout(secure, timeout);
+
+        }
     private:
+        void CheckDeadline() {
+            if (deadlineTimer.expires_at() <= boost::asio::deadline_timer::traits_type::now()) {
+                boost::system::error_code ignored_ec;
+                socket.close(ignored_ec);
+                deadlineTimer.expires_at(boost::posix_time::pos_infin);
+            }
+            deadlineTimer.async_wait(bind(&TCPContext::CheckDeadline, this));
+        }
         inline void Clear() {
             aliveHost.clear();
             alivePort.clear();
             aliveTime = 0;
-        };
+        }
         bool Connect(tcp::socket & socket, const std::string & host, const std::string & port, bool secure) {
             if (socket.is_open() && (aliveHost == host) && (alivePort == port) && (clock() < aliveTime)) {
                 return true;
@@ -219,12 +240,16 @@ private:
             tcp::resolver::query query(host, port);
             tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
             tcp::resolver::iterator end;
-            boost::system::error_code error = boost::asio::error::host_not_found;
-            while (error && endpoint_iterator != end) {
-                socket.close();
-                socket.connect(*endpoint_iterator++, error);
-            }
-            if (error) {
+
+            boost::system::error_code error = boost::asio::error::would_block;
+
+            deadlineTimer.expires_from_now(boost::posix_time::time_duration(0, 0, timeout));
+            boost::asio::async_connect(socket, endpoint_iterator, var(error) = _1);
+
+            do {
+                resolver.get_io_service().run_one();
+            } while (error == boost::asio::error::would_block);
+            if (error || !socket.is_open()) {
                 Clear();
                 std::cerr << "error connecting to endpoint: " << error.message() << std::endl;
                 return false;
@@ -244,18 +269,66 @@ private:
                 alivePort = port;
                 return true;
             }
-        };
+        }
+
+        void ReadWithTimeout(bool secure, int timeout = 30) {
+            using namespace boost::asio;
+            using namespace boost::posix_time;
+            using namespace boost::system;
+            streambuf headerBuf(4);
+            auto timeoutDuration = time_duration(0,0,timeout);
+            deadlineTimer.expires_from_now(timeoutDuration);
+            error_code headerEc = error::would_block;
+
+            secure ?
+                        async_read(sslSocket, headerBuf, var(headerEc) = _1) :
+                        async_read(socket, headerBuf, var(headerEc) = _1);
+            do {
+                secure ?
+                            sslSocket.get_io_service().run_one() :
+                            socket.get_io_service().run_one();
+            } while(headerEc == error::would_block);
+
+            if (headerEc) {
+                throw system_error(headerEc);
+            }
+            error_code contentEc = error::would_block;
+            deadlineTimer.expires_from_now(timeoutDuration);
+            uint32_t payloadSize = boost::endian::big_to_native(buffer_cast<const int32_t *>(headerBuf.data())[0]);
+
+            streambuf buf(payloadSize);
+            secure ?
+                        async_read(sslSocket, buf, var(contentEc) = _1) :
+                        async_read(socket, buf, var(contentEc) = _1) ;
+            do {
+                secure ?
+                            sslSocket.get_io_service().run_one() :
+                            socket.get_io_service().run_one();
+            } while(contentEc == error::would_block);
+
+            if (contentEc) {
+                throw system_error(contentEc);
+            }
+            std::iostream readStream(&buf);
+            size_t bufSize = buf.size();
+            for (size_t i = 0; i < bufSize; ++i) {
+                responseStream << (char)readStream.get();
+            }
+            aliveTime = clock() + timeout * CLOCKS_PER_SEC;
+        }
 
         void Read(bool secure) {
             boost::asio::streambuf headerBuf(4);
             int headerSize = 4;
             while (headerSize > 0 ) {
 #ifndef HPROSE_NO_OPENSSL
-                headerSize -= 
+                headerSize -=
                     secure ?
                     boost::asio::read(sslSocket, headerBuf) :
-#endif
                     boost::asio::read(socket, headerBuf);
+#else
+                headerSize -= boost::asio::read(socket, headerBuf);
+#endif
             }
             uint32_t payloadSize = boost::endian::big_to_native(boost::asio::buffer_cast<const int32_t *>(headerBuf.data())[0]);
             boost::asio::streambuf buf(payloadSize);
@@ -273,8 +346,34 @@ private:
                 payloadSize -= s;
             }
             aliveTime = clock() + timeout * CLOCKS_PER_SEC;
-        };
+        }
  
+        void WriteWithTimeout(boost::asio::streambuf & buf, bool secure, int timeout = 30) {
+            using namespace boost::asio;
+            using namespace boost::posix_time;
+            using namespace boost::system;
+            error_code ec = error::would_block;
+            auto timeoutDuration = time_duration(0,0,timeout);
+            deadlineTimer.expires_from_now(timeoutDuration);
+#ifndef HPROSE_NO_OPENSSL
+            if (secure) {
+                async_write(sslSocket, buf, var(ec) = _1);
+            } else {
+#endif
+                async_write(socket, buf, var(ec) = _1);
+#ifndef HPROSE_NO_OPENSSL
+            }
+#endif
+            do {
+                secure ?
+                            sslSocket.get_io_service().run_one() :
+                            socket.get_io_service().run_one();
+            } while(ec == error::would_block);
+            if (ec) {
+                throw system_error(ec);
+            }
+
+        }
         void Write(boost::asio::streambuf & buf, bool secure) {
 #ifndef HPROSE_NO_OPENSSL
             if (secure) {
@@ -285,9 +384,10 @@ private:
 #ifndef HPROSE_NO_OPENSSL
             }
 #endif
-        };
+        }
 
     private:
+        boost::asio::deadline_timer deadlineTimer;
         std::string aliveHost;
         std::string alivePort;
         clock_t aliveTime;
@@ -313,7 +413,8 @@ private:
     };
 
 private:
-    
+    int timeout = 300;
+    bool keepAlive = false;
     std::string protocol;
     std::string user;
     std::string password;
