@@ -21,6 +21,9 @@ login:
 tcp:
 	$(CXX) -fno-limit-debug-info -g $(STD) test-$@.cpp $(LIBS) $(INCLUDE) -o $(BUILD_DIR)$@
 
+timeout:
+	$(CXX) -fno-limit-debug-info -g $(STD) test-$@.cpp $(LIBS) $(INCLUDE) -o $(BUILD_DIR)$@
+
 subscribe:
 	$(CXX) -fno-limit-debug-info -g $(STD) test-$@.cpp $(LIBS) $(INCLUDE) -o $(BUILD_DIR)$@
 
